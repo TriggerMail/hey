@@ -37,6 +37,7 @@ const (
 	authRegexp   = `^(.+):([^\s].+)`
 	heyUA        = "hey/0.0.1"
 )
+// THIS IS A TEST NOAM 
 
 var (
 	m           = flag.String("m", "GET", "")
