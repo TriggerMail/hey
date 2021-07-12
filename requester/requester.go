@@ -16,10 +16,13 @@
 package requester
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -98,6 +101,11 @@ type Work struct {
 	start    time.Duration
 
 	report *report
+
+	UrlFile string
+	urls    chan string
+
+	CreateReqFunc func(url string) *http.Request
 }
 
 func (b *Work) writer() io.Writer {
@@ -112,7 +120,30 @@ func (b *Work) Init() {
 	b.initOnce.Do(func() {
 		b.results = make(chan *result, min(b.C*1000, maxResult))
 		b.stopCh = make(chan struct{}, b.C)
+		b.urls = make(chan string)
 	})
+}
+
+func (b *Work) urlsReader() {
+
+	defer close(b.urls)
+
+	for true {
+		f, err := os.Open(b.UrlFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		s := bufio.NewScanner(f)
+
+		for s.Scan() {
+			b.urls <- s.Text()
+		}
+
+		fmt.Printf("urlsReader: end of file, re-opening\n")
+
+		f.Close()
+	}
 }
 
 // Run makes all the requests, prints the summary. It blocks until
@@ -125,6 +156,11 @@ func (b *Work) Run() {
 	go func() {
 		runReporter(b.report)
 	}()
+	if b.UrlFile != "" {
+		go func() {
+			b.urlsReader()
+		}()
+	}
 	b.runWorkers()
 	b.Finish()
 }
@@ -151,11 +187,13 @@ func (b *Work) makeRequest(c *http.Client) {
 	var dnsStart, connStart, resStart, reqStart, delayStart time.Duration
 	var dnsDuration, connDuration, resDuration, reqDuration, delayDuration time.Duration
 	var req *http.Request
-	if b.RequestFunc != nil {
-		req = b.RequestFunc()
-	} else {
-		req = cloneRequest(b.Request, b.RequestBody)
+
+	if b.UrlFile != "" {
+		url1 := <-b.urls
+		fmt.Printf("makeRequest: url1: '%s'\n", url1)
+		req = b.CreateReqFunc(url1)
 	}
+
 	trace := &httptrace.ClientTrace{
 		DNSStart: func(info httptrace.DNSStartInfo) {
 			dnsStart = now()
@@ -212,11 +250,6 @@ func (b *Work) runWorker(client *http.Client, n int) {
 		throttle = time.Tick(time.Duration(1e6/(b.QPS)) * time.Microsecond)
 	}
 
-	if b.DisableRedirects {
-		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		}
-	}
 	for i := 0; i < n; i++ {
 		// Check if application is stopped. Do not send into a closed channel.
 		select {
@@ -251,6 +284,12 @@ func (b *Work) runWorkers() {
 		tr.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
 	}
 	client := &http.Client{Transport: tr, Timeout: time.Duration(b.Timeout) * time.Second}
+
+	if b.DisableRedirects {
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 
 	// Ignore the case where b.N % b.C != 0.
 	for i := 0; i < b.C; i++ {

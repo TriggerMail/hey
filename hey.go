@@ -64,6 +64,7 @@ var (
 	disableKeepAlives  = flag.Bool("disable-keepalive", false, "")
 	disableRedirects   = flag.Bool("disable-redirects", false, "")
 	proxyAddr          = flag.String("x", "", "")
+	urlFile            = flag.String("uf", "urls.csv", "")
 )
 
 var usage = `Usage: hey [options...] <url>
@@ -92,6 +93,7 @@ Options:
   -a  Basic authentication, username:password.
   -x  HTTP Proxy address as host:port.
   -h2 Enable HTTP/2.
+  -uf Use CSV file with URls
 
   -host	HTTP Host header.
 
@@ -137,28 +139,7 @@ func main() {
 		}
 	}
 
-	url := flag.Args()[0]
 	method := strings.ToUpper(*m)
-
-	// set content-type
-	header := make(http.Header)
-	header.Set("Content-Type", *contentType)
-	// set any other additional headers
-	if *headers != "" {
-		usageAndExit("Flag '-h' is deprecated, please use '-H' instead.")
-	}
-	// set any other additional repeatable headers
-	for _, h := range hs {
-		match, err := parseInputWithRegexp(h, headerRegexp)
-		if err != nil {
-			usageAndExit(err.Error())
-		}
-		header.Set(match[1], match[2])
-	}
-
-	if *accept != "" {
-		header.Set("Accept", *accept)
-	}
 
 	// set basic auth if set
 	var username, password string
@@ -191,35 +172,65 @@ func main() {
 		}
 	}
 
-	req, err := http.NewRequest(method, url, nil)
-	if err != nil {
-		usageAndExit(err.Error())
-	}
-	req.ContentLength = int64(len(bodyAll))
-	if username != "" || password != "" {
-		req.SetBasicAuth(username, password)
-	}
+	var req *http.Request
 
-	// set host header if set
-	if *hostHeader != "" {
-		req.Host = *hostHeader
-	}
+	createReqFunc := func(url string) *http.Request {
 
-	ua := header.Get("User-Agent")
-	if ua == "" {
-		ua = heyUA
-	} else {
-		ua += " " + heyUA
-	}
-	header.Set("User-Agent", ua)
+		req, err := http.NewRequest(method, url, nil)
+		if err != nil {
+			usageAndExit(err.Error())
+		}
+		req.ContentLength = int64(len(bodyAll))
+		if username != "" || password != "" {
+			req.SetBasicAuth(username, password)
+		}
 
-	// set userAgent header if set
-	if *userAgent != "" {
-		ua = *userAgent + " " + heyUA
+		// set host header if set
+		if *hostHeader != "" {
+			req.Host = *hostHeader
+		}
+
+		// set content-type
+		header := make(http.Header)
+		header.Set("Content-Type", *contentType)
+		// set any other additional headers
+		if *headers != "" {
+			usageAndExit("Flag '-h' is deprecated, please use '-H' instead.")
+		}
+		// set any other additional repeatable headers
+		for _, h := range hs {
+			match, err := parseInputWithRegexp(h, headerRegexp)
+			if err != nil {
+				usageAndExit(err.Error())
+			}
+			header.Set(match[1], match[2])
+		}
+
+		if *accept != "" {
+			header.Set("Accept", *accept)
+		}
+
+		ua := header.Get("User-Agent")
+		if ua == "" {
+			ua = heyUA
+		} else {
+			ua += " " + heyUA
+		}
 		header.Set("User-Agent", ua)
+
+		// set userAgent header if set
+		if *userAgent != "" {
+			ua = *userAgent + " " + heyUA
+			header.Set("User-Agent", ua)
+		}
+
+		req.Header = header
+		return req
 	}
 
-	req.Header = header
+	// need to make existing code happy:
+	url := flag.Args()[0]
+	req = createReqFunc(url)
 
 	w := &requester.Work{
 		Request:            req,
@@ -234,6 +245,8 @@ func main() {
 		H2:                 *h2,
 		ProxyAddr:          proxyURL,
 		Output:             *output,
+		UrlFile:            *urlFile,
+		CreateReqFunc:      createReqFunc,
 	}
 	w.Init()
 
